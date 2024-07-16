@@ -1,0 +1,63 @@
+{
+  "authentication": {
+    "type": "none"
+  },
+  "baseUrl": "https://orrocyber.github.io/jira-field-check",
+  "description": "Checks issue fields against predefined criteria",
+  "key": "com.orrocyber.export-status-checker",
+  "version": "0.1.2",
+  "modules": {
+    "jiraIssueContexts": [
+      {
+        "content": {
+          "label": {
+            "value": "Export Status"
+          },
+          "type": "label"
+        },
+        "contexts": [
+          "jira.issue.sidebar"
+        ],
+        "icon": {
+          "height": 0,
+          "url": "jira-field-check/icon.svg",
+          "width": 0
+        },
+        "key": "export-status-context",
+        "name": {
+          "value": "Export Status"
+        },
+        "resource": {
+          "height": 600,
+          "name": {
+            "value": "Export Status"
+          },
+          "type": "web_panel",
+          "url": "/export-status-panel.html"
+        },
+        "target": {
+          "type": "web_panel",
+          "url": "/export-status-panel.html"
+        },
+        "conditions": [
+          {
+            "condition": "jira_expression",
+            "params": {
+              "expression": "app.properties['supportedIssueTypes'].includes(issue.issueType.id)"
+            },
+            "invert": true
+          }
+        ]
+      }
+    ]
+  },
+  "name": "Export Status Checker",
+  "scopes": [
+    "read",
+    "write"
+  ],
+  "vendor": {
+    "name": "Orro Cyber",
+    "url": "https://orro.group"
+  }
+}
