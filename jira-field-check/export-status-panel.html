@@ -2,363 +2,516 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Export Status</title>
-    <script src="https://connect-cdn.atl-paas.net/all.js"></script>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-            font-size: 14px;
-            color: #172B4D;
-            margin: 0;
-            padding: 10px;
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Export Status</title>
+  <script src="https://connect-cdn.atl-paas.net/all.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Fira Sans", "Droid Sans", "Helvetica Neue",
+        sans-serif;
+      font-size: 14px;
+      color: #172b4d;
+      margin: 0;
+      padding: 10px;
+    }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
 
-        th,
-        td {
-            text-align: left;
-            padding: 8px;
-            border-bottom: 1px solid #ddd;
-        }
+    th,
+    td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid #ddd;
+    }
 
-        th {
-            background-color: #f4f5f7;
-        }
+    th {
+      background-color: #f4f5f7;
+    }
 
-        .status-ok {
-            color: #00875A;
-        }
+    .status-ok {
+      color: #00875a;
+    }
 
-        .status-crit {
-            color: #DE350B;
-        }
+    .status-crit {
+      color: #de350b;
+    }
 
-        .status-warn {
-            color: #FFA500;
-        }
-    </style>
+    .status-warn {
+      color: #ffa500;
+    }
+  </style>
 </head>
 
 <body>
-    <table id="statusTable">
-        <tr>
-            <th>Check</th>
-            <th>Status</th>
-        </tr>
-    </table>
+  <table id="statusTable">
+    <tr>
+      <th>Check</th>
+      <th>Status</th>
+    </tr>
+  </table>
 
-    <script type="text/javascript" defer>
-        // Define the CVSS score -> name lookup table. E.g. 0.0 -> Info, 0.1 -> Low, 3.9 -> Medium, 6.9 -> High, 8.9 -> Critical
-        const cvssScoreLookup = {
-            _default: {
-                0.0: 'Info',
-                0.1: 'Low',
-                4.0: 'Medium',
-                7.0: 'High',
-                9.0: 'Critical'
-            },
-        };
-        let issueKey = null;
-        document.addEventListener('DOMContentLoaded', (event) => {
-            console.log("Export Status panel loaded.");
-            initalise();
+  <script type="text/javascript" defer>
+    const cvssScoreLookup = {
+      _default: {
+        0.0: "Info",
+        0.1: "Low",
+        4.0: "Medium",
+        7.0: "High",
+        9.0: "Critical",
+      },
+    };
+
+    let issueKey = null;
+    initalise();
+
+    async function initalise() {
+      const context = await AP.context.getContext();
+      issueKey = context.jira.issue.key;
+      console.log("Context retrieved. Issue Key:", issueKey);
+      checkAndUpdateStatus();
+
+      AP.events.on("ISSUE_CHANGED", function (data) {
+        console.log("ISSUE_CHANGED", data);
+        checkAndUpdateStatus();
+      });
+    }
+
+    function updateContextStatus(successCount, totalCount, hasCrit) {
+      const statusType = hasCrit ? "removed" : successCount < totalCount ? "moved" : "success";
+      const label = `${successCount}/${totalCount}`;
+      AP.request({
+        url: `/rest/api/3/issue/${issueKey}/properties/com.atlassian.jira.issue:com.orrocyber.export-status-checker:export-status-context:status`,
+        type: "PUT",
+        contentType: "application/json",
+        data: JSON.stringify({
+          type: "lozenge",
+          value: {
+            label: label,
+            type: statusType,
+          },
+        }),
+        success: function () {
+          console.log("Context status updated successfully");
+        },
+        error: function (xhr, statusText, errorThrown) {
+          console.error("Error updating context status:", errorThrown);
+        },
+      });
+    }
+
+    function fetchIssueData(fetchKey) {
+      return new Promise((resolve, reject) => {
+        console.log("Fetching issue data for Issue Key:", fetchKey);
+        AP.request({
+          url: "/rest/api/3/issue/" + fetchKey,
+          type: "GET",
+          success: function (response) {
+            console.log(`${fetchKey} fetched successfully`);
+            let issue = JSON.parse(response);
+            console.log(issue);
+            resolve(issue);
+          },
+          error: function (xhr, statusText, errorThrown) {
+            console.error("Error fetching issue data:", errorThrown);
+            reject(errorThrown);
+          },
+        });
+      });
+    }
+
+    async function checkAndUpdateStatus() {
+      const context = await AP.context.getContext();
+      issueKey = context.jira.issue.key;
+      if (!["10100", "10101"].includes(context.jira.issue.issuetype.id)) {
+        console.log("Issue is not a vulnerability or engagement, skipping checks.");
+        return;
+      }
+      try {
+        const issue = await fetchIssueData(issueKey);
+        const parentIssue = context.jira.issue.issuetype.id == "10101" ? null : await getParentIssue(issue);
+        checkExportStatus(issue, parentIssue);
+      } catch (error) {
+        console.error("Error in checkAndUpdateStatus:", error);
+      }
+    }
+
+    async function getParentIssue(issue) {
+      const issueLinks = issue.fields.issuelinks || [];
+      console.log("Checking for parent issue:", issueLinks);
+      issueLinks
+        .filter((x) => x.outwardIssue)
+        .sort((a, b) => {
+          const regex = /-(\d+)$/;
+          const aNumber = parseInt(a.outwardIssue.key.match(regex)[1]);
+          const bNumber = parseInt(b.outwardIssue.key.match(regex)[1]);
+          return bNumber - aNumber;
+        });
+      for (const link of issueLinks) {
+        if (link.type.name === "Child") {
+          return await fetchIssueData(link.outwardIssue.key);
+        }
+      }
+      return null;
+    }
+
+    function checkExportStatus(issue, parentIssue) {
+      console.log(`Checking export status for issue: ${issue.key}`);
+      let checks = [];
+
+      // Vulnerability
+      if (issue.fields.issuetype.id == 10100) {
+        checks = [
+          checkAffectedComponentsField,
+          checkCVSSScoreField,
+          checkCVSSVectorStringField,
+          checkDefectStatusField,
+          checkDescriptionField,
+          checkEngagementStatus,
+          checkLinkedIssue,
+          checkRecommendationField,
+          checkSeverity,
+          checkSynopsisField,
+          checkTestingPhaseField,
+          checkVulnerabilityCategoryField,
+        ];
+      }
+
+      // Engagement
+      if (issue.fields.issuetype.id == 10101) {
+        checks = [
+          checkCredentials,
+          checkCustomerContact,
+          checkExternalReference,
+          checkNotificationList,
+          checkReportRecipients,
+          checkTimesheetCode,
+        ];
+        if (issue.fields.status.name !== "Pre-Engagement") {
+          checks.push(checkAuthors, checkTestCaseURL);
+          checks = checks.filter((check) => check.name !== "checkCredentials");
+        }
+      }
+
+      let successCount = 0;
+      const okChecks = [];
+      const warnChecks = [];
+      const critChecks = [];
+
+      checks.forEach(function (checkItem) {
+        const result = checkItem(issue, parentIssue);
+        console.log(`Check: ${checkItem.name}, Result: ${result.status}`);
+        if (result.status === "OK") {
+          successCount++;
+          okChecks.push(result);
+        } else if (result.status === "WARN") {
+          warnChecks.push(result);
+        } else {
+          critChecks.push(result);
+        }
+      });
+
+      const sortedChecks = [...critChecks, ...warnChecks];
+
+      const table = document.getElementById("statusTable");
+      table.innerHTML = `
+          <tr>
+              <th>Checks (${checks.length - successCount}/${checks.length})</th>
+              <th>Status</th>
+              <th>Message</th>
+          </tr>
+      `;
+
+      sortedChecks.forEach(function (result) {
+        const row = table.insertRow(-1);
+        const cellName = row.insertCell(0);
+        const cellStatus = row.insertCell(1);
+        const cellMessage = row.insertCell(2);
+        cellName.textContent = result.name;
+        cellStatus.textContent =
+          result.status === "CRIT" ? "❌" : "⚠️";
+        cellStatus.className =
+          result.status === "CRIT" ? "status-crit" : "status-warn";
+        cellMessage.textContent = result.message;
+      });
+
+      updateContextStatus(successCount, checks.length, critChecks.length > 0);
+
+      // Remove existing OK checks details if they exist
+      const existingDetails = document.getElementById("okChecksDetails");
+      if (existingDetails) {
+        existingDetails.remove();
+      }
+
+      if (okChecks.length > 0) {
+        const okTable = document.createElement("table");
+        okTable.style.width = "100%";
+        okTable.style.borderCollapse = "collapse";
+        okTable.innerHTML = `
+            <tr>
+                <th>Checks (${successCount}/${checks.length})</th>
+                <th>Status</th>
+                <th>Message</th>
+            </tr>
+        `;
+
+        okChecks.forEach(function (result) {
+          const row = okTable.insertRow(-1);
+          const cellName = row.insertCell(0);
+          const cellStatus = row.insertCell(1);
+          const cellMessage = row.insertCell(2);
+          cellName.textContent = result.name;
+          cellStatus.textContent = "✅";
+          cellStatus.className = "status-ok";
+          cellMessage.textContent = result.message;
         });
 
-        async function initalise() {
-            const context = await AP.context.getContext();
-            issueKey = context.jira.issue.key;
-            console.log("Context retrieved. Issue Key:", issueKey);
-            checkAndUpdateStatus();
-
-            AP.events.on("ISSUE_CHANGED", function (data) {
-                console.log("ISSUE_CHANGED (Connect)", data);
-                checkAndUpdateStatus();
-            });
+        if (sortedChecks.length) {
+          const details = document.createElement("details");
+          details.id = "okChecksDetails";
+          const summary = document.createElement("summary");
+          summary.textContent = "OK Checks (click to expand)";
+          details.appendChild(summary);
+          details.appendChild(okTable);
+          table.parentNode.appendChild(details);
+        } else {
+          // set document.getElementById('statusTable') to okTable
+          table.innerHTML = okTable.innerHTML;
         }
+      }
+    }
 
-        function updateContextStatus(successCount, totalCount, hasCrit) {
-            const statusType = hasCrit ? 'removed' : successCount < totalCount ? 'moved' : 'success';
-            const label = `${successCount}/${totalCount}`;
-            AP.request({
-                url: `/rest/api/3/issue/${issueKey}/properties/com.atlassian.jira.issue:com.orrocyber.export-status-checker:export-status-context:status`,
-                type: 'PUT',
-                contentType: 'application/json',
-                data: JSON.stringify({
-                    type: 'lozenge',
-                    value: {
-                        label: label,
-                        type: statusType
-                    }
-                }),
-                success: function () {
-                    console.log('Context status updated successfully');
-                },
-                error: function (xhr, statusText, errorThrown) {
-                    console.error('Error updating context status:', errorThrown);
-                }
-            });
+    function checkAuthors(issue, parentIssue) {
+      const authors = issue.fields.customfield_11300;
+      console.log("Checking authors field:", authors);
+      return {
+        name: "Authors",
+        status: authors ? "OK" : "CRIT",
+        message: authors ? "Present" : "Missing",
+      };
+    }
+
+    function checkTestCaseURL(issue, parentIssue) {
+      const testCaseURL = issue.fields.customfield_11301;
+      console.log("Checking test case URL field:", testCaseURL);
+      return {
+        name: "Test Case URL",
+        status: testCaseURL ? "OK" : "CRIT",
+        message: testCaseURL ? "Present" : "Missing",
+      };
+    }
+
+    function checkCredentials(issue, parentIssue) {
+      const credentials = issue.fields.customfield_11402;
+      console.log("Checking credentials field:", credentials);
+      return {
+        name: "Credentials",
+        status: credentials ? "OK" : "WARN",
+        message: credentials ? "Present" : "Missing",
+      };
+    }
+
+    function checkCustomerContact(issue, parentIssue) {
+      const customerContact = issue.fields.customfield_10307;
+      console.log("Checking customer contact field:", customerContact);
+      return {
+        name: "Customer Contact",
+        status: customerContact ? "OK" : "CRIT",
+        message: customerContact ? "Present" : "Missing",
+      };
+    }
+
+    function checkNotificationList(issue, parentIssue) {
+      const notificationList = issue.fields.customfield_10806;
+      console.log("Checking notification list field:", notificationList);
+      return {
+        name: "Notification List",
+        status: notificationList ? "OK" : "CRIT",
+        message: notificationList ? "Present" : "Missing",
+      };
+    }
+
+    function checkReportRecipients(issue, parentIssue) {
+      const reportRecipient = issue.fields.customfield_10802;
+      console.log("Checking report recipient field:", reportRecipient);
+      return {
+        name: "Report Recipient",
+        status: reportRecipient ? "OK" : "CRIT",
+        message: reportRecipient ? "Present" : "Missing",
+      };
+    }
+
+    function checkTimesheetCode(issue, parentIssue) {
+      const timesheetCode = issue.fields.customfield_11700;
+      console.log("Checking timesheet code field:", timesheetCode);
+      return {
+        name: "Timesheet Code",
+        status: timesheetCode ? "OK" : "CRIT",
+        message: timesheetCode ? "Present" : "Missing",
+      };
+    }
+
+    function checkExternalReference(issue, parentIssue) {
+      const externalReference = issue.fields.customfield_10805;
+      console.log("Checking external reference field:", externalReference);
+      return {
+        name: "External Reference",
+        status: externalReference ? "OK" : "WARN",
+        message: externalReference ? "Present" : "Missing",
+      };
+    }
+
+    function checkSeverity(issue) {
+      const customerName = issue.fields.project.key || "_default";
+      const priority = issue.fields.priority?.name || issue.fields.customfield_10313?.value;
+      // const severity = issue.fields.customfield_10313;
+      const cvssScore = parseFloat(issue.fields.customfield_10315 || 0);
+      const hashedName = customerName;
+      const customerLookup = cvssScoreLookup[hashedName] || cvssScoreLookup._default;
+      const intendedSeverity = customerLookup[
+        Object.keys(customerLookup)
+          .sort()
+          .reverse()
+          .find((key) => cvssScore >= parseFloat(key)) || 0.0
+      ];
+      console.log("Checking severity field:", priority);
+      console.log("Checking CVSS score field:", cvssScore);
+      console.log("Intended severity:", intendedSeverity);
+      return {
+        name: "Severity",
+        status: priority == intendedSeverity ? "OK" : "WARN",
+        message:
+          priority != intendedSeverity
+            ? `${priority} != ${intendedSeverity} (${cvssScore})`
+            : `${priority}  (${cvssScore})`,
+      };
+    }
+
+    function checkLinkedIssue(issue) {
+      const issueLinks = issue.fields.issuelinks;
+      console.log("Checking linked issue field:", issueLinks);
+      return {
+        name: "Engagement Issue",
+        status: issueLinks && issueLinks.length > 0 ? "OK" : "CRIT",
+        message: issueLinks.length > 0 ? "Linked issues present" : "No linked issues",
+      };
+    }
+
+    function checkEngagementStatus(issue, parentIssue) {
+      const status = parentIssue ? parentIssue.fields.status.name : "No parent issue";
+      console.log("Checking engagement status field for parent issue:", status);
+      return {
+        name: "Engagement Status",
+        status:
+          parentIssue && parentIssue.fields.status.name !== "Pre-Engagement"
+            ? "OK"
+            : "CRIT",
+        message: `${status}`,
+      };
+    }
+
+    function checkDescriptionField(issue) {
+      const description = issue.fields.description?.content;
+      console.log("Checking description field:", description);
+      return {
+        name: "Description",
+        status: description?.length ? "OK" : "CRIT",
+        message: description?.length ? "Present" : "Missing",
+      };
+    }
+
+    function checkAffectedComponentsField(issue) {
+      const affectedComponents = issue.fields.customfield_11200?.content;
+      console.log("Checking affected components field:", affectedComponents);
+      return {
+        name: "Affected Components",
+        status: affectedComponents?.length ? "OK" : "CRIT",
+        message: affectedComponents?.length ? "Present" : "Missing",
+      };
+    }
+
+    function checkSynopsisField(issue) {
+      const synopsis = issue.fields.customfield_10318?.content;
+      console.log("Checking synopsis field:", synopsis);
+      return {
+        name: "Synopsis",
+        status: synopsis?.length ? "OK" : "CRIT",
+        message: synopsis?.length ? "Present" : "Missing",
+      };
+    }
+
+    function checkRecommendationField(issue) {
+      const recommendation = issue.fields.customfield_10317?.content;
+      console.log("Checking recommendation field:", recommendation);
+      return {
+        name: "Recommendation",
+        status: recommendation?.length ? "OK" : "CRIT",
+        message: recommendation?.length ? "Present" : "Missing",
+      };
+    }
+
+    function checkTestingPhaseField(issue) {
+      const testingPhase = issue.fields.customfield_10311;
+      console.log("Checking testing phase field:", testingPhase);
+      return {
+        name: "Testing Phase",
+        status: testingPhase ? "OK" : "CRIT",
+        message: testingPhase ? "Present" : "Missing",
+      };
+    }
+
+    function checkDefectStatusField(issue) {
+      const defectStatus = issue.fields.customfield_10314;
+      console.log("Checking defect status field:", defectStatus);
+      return {
+        name: "Defect Status",
+        status: defectStatus ? "OK" : "CRIT",
+        message: defectStatus ? "Present" : "Missing",
+      };
+    }
+
+    function checkCVSSScoreField(issue) {
+      const cvssScore = issue.fields.customfield_10315;
+      console.log("Checking CVSS score field:", cvssScore);
+      return {
+        name: "CVSS Score",
+        status: cvssScore ? "OK" : "CRIT",
+        message: cvssScore ? "Present" : "Missing",
+      };
+    }
+
+    function checkCVSSVectorStringField(issue) {
+      const cvssVectorString = issue.fields.customfield_10316;
+      let status = "OK";
+      let message = "Present";
+      console.log("Checking CVSS vector string field:", cvssVectorString);
+      // CRIT if the vector string is empty or doesn't exist
+      if (!cvssVectorString) {
+        status = "CRIT";
+        message = "Missing";
+      } else {
+        // WARN if the vector string doesn't start with CVSS:3.1
+        if (!cvssVectorString.startsWith("CVSS:3.1/")) {
+          status = "WARN";
+          message = `Incorrect version, should be 'CVSS:3.1' not '${cvssVectorString.split("/")[0]}'`;
         }
+      }
+      return { name: "CVSS Vector", status, message };
+    }
 
-        function fetchIssueData(fetchKey) {
-            return new Promise((resolve, reject) => {
-                console.log("Fetching issue data for Issue Key:", fetchKey);
-                AP.request({
-                    url: '/rest/api/3/issue/' + fetchKey,
-                    type: 'GET',
-                    success: function (response) {
-                        console.log(`${fetchKey} fetched successfully`);
-                        var issue = JSON.parse(response);
-                        console.log(issue)
-                        resolve(issue);
-                    },
-                    error: function (xhr, statusText, errorThrown) {
-                        console.error('Error fetching issue data:', errorThrown);
-                        reject(errorThrown);
-                    }
-                });
-            });
-        }
-
-        async function checkAndUpdateStatus() {
-            const context = await AP.context.getContext();
-            issueKey = context.jira.issue.key;
-            if (context.jira.issue.issuetype.id != 10100) {
-                console.log("Issue is not a vulnerability, skipping checks.");
-                console.log(context.jira.issue.issuetype.id);
-                console.log(`context.jira.issue.issuetype: ${context.jira.issue.issuetype.id} != 10100`);
-                return;
-            }
-            try {
-                const issue = await fetchIssueData(issueKey);
-                const parentIssue = await getParentIssue(issue);
-                checkExportStatus(issue, parentIssue);
-            } catch (error) {
-                console.error("Error in checkAndUpdateStatus:", error);
-            }
-        }
-
-        async function getParentIssue(issue) {
-            const issueLinks = issue.fields.issuelinks || [];
-            console.log("Checking for parent issue:", issueLinks);
-            issueLinks.filter(x => x.outwardIssue).sort((a, b) => {
-                const regex = /-(\d+)$/;
-                const aNumber = parseInt(a.outwardIssue.key.match(regex)[1]);
-                const bNumber = parseInt(b.outwardIssue.key.match(regex)[1]);
-                return bNumber - aNumber;
-            });
-            for (let link of issueLinks) {
-                if (link.type.name === 'Child') {
-                    return await fetchIssueData(link.outwardIssue.key);
-                }
-            }
-            return null;
-        }
-
-
-        function checkExportStatus(issue, parentIssue) {
-            console.log(`Checking export status for issue: ${issue.key}`);
-            var checks = [
-                checkAffectedComponentsField,
-                checkCVSSScoreField,
-                checkCVSSVectorStringField,
-                checkDefectStatusField,
-                checkDescriptionField,
-                checkEngagementStatus,
-                checkLinkedIssue,
-                checkRecommendationField,
-                checkSeverity,
-                checkSynopsisField,
-                checkTestingPhaseField,
-                checkVulnerabilityCategoryField
-            ];
-
-            let successCount = 0;
-            const okChecks = [];
-            const warnChecks = [];
-            const critChecks = [];
-
-            checks.forEach(function (checkItem) {
-                var result = checkItem(issue, parentIssue);
-                console.log(`Check: ${checkItem.name}, Result: ${result.status}`);
-                if (result.status === 'OK') {
-                    successCount++;
-                    okChecks.push(result);
-                } else if (result.status === 'WARN') {
-                    warnChecks.push(result);
-                } else {
-                    critChecks.push(result);
-                }
-            });
-
-            const sortedChecks = [...critChecks, ...warnChecks];
-
-
-            var table = document.getElementById('statusTable');
-            table.innerHTML = `
-                <tr>
-                    <th>Checks (${checks.length - successCount}/${checks.length})</th>
-                    <th>Status</th>
-                    <th>Message</th>
-                </tr>
-            `;
-
-            sortedChecks.forEach(function (result) {
-                var row = table.insertRow(-1);
-                var cellName = row.insertCell(0);
-                var cellStatus = row.insertCell(1);
-                var cellMessage = row.insertCell(2);
-                cellName.textContent = result.name;
-                cellStatus.textContent = result.status === 'OK' ? '✅' : result.status === 'CRIT' ? '❌' : '⚠️';
-                cellStatus.className = result.status === 'OK' ? 'status-ok' : result.status === 'CRIT' ? 'status-crit' : 'status-warn';
-                cellMessage.textContent = result.message;
-            });
-
-            updateContextStatus(successCount, checks.length, critChecks.length > 0);
-
-            // Remove existing OK checks details if they exist
-            const existingDetails = document.getElementById('okChecksDetails');
-            if (existingDetails) {
-                existingDetails.remove();
-            }
-
-            if (okChecks.length > 0) {
-                const okTable = document.createElement('table');
-                okTable.style.width = '100%';
-                okTable.style.borderCollapse = 'collapse';
-                okTable.innerHTML = `
-                    <tr>
-                        <th>Checks (${successCount}/${checks.length})</th>
-                        <th>Status</th>
-                        <th>Message</th>
-                    </tr>
-                `;
-
-                okChecks.forEach(function (result) {
-                    var row = okTable.insertRow(-1);
-                    var cellName = row.insertCell(0);
-                    var cellStatus = row.insertCell(1);
-                    var cellMessage = row.insertCell(2);
-                    cellName.textContent = result.name;
-                    cellStatus.textContent = '✅';
-                    cellStatus.className = 'status-ok';
-                    cellMessage.textContent = result.message;
-                });
-
-
-                if (sortedChecks.length) {
-                    const details = document.createElement('details');
-                    details.id = 'okChecksDetails';
-                    const summary = document.createElement('summary');
-                    summary.textContent = "OK Checks (click to expand)";
-                    details.appendChild(summary);
-                    details.appendChild(okTable);
-                    table.parentNode.appendChild(details);
-                } else {
-                    // set document.getElementById('statusTable') to okTable
-                    table.innerHTML = okTable.innerHTML;
-                }
-            }
-        }
-
-        function checkSeverity(issue) {
-            const customerName = issue.fields.project.key || '_default';
-            const priority = issue.fields.priority?.name || issue.fields.customfield_10313?.value;
-            // const severity = issue.fields.customfield_10313;
-            const cvssScore = parseFloat(issue.fields.customfield_10315 || 0);
-            const hashedName = customerName;
-            const customerLookup = cvssScoreLookup[hashedName] || cvssScoreLookup._default;
-            const intendedSeverity = customerLookup[Object.keys(customerLookup).sort().reverse().find((key) => cvssScore >= parseFloat(key)) || 0.0];
-            console.log("Checking severity field:", priority);
-            console.log("Checking CVSS score field:", cvssScore);
-            console.log("Intended severity:", intendedSeverity);
-            return { name: 'Severity', status: priority == intendedSeverity ? 'OK' : 'WARN', message: priority != intendedSeverity ? `${priority} != ${intendedSeverity} (${cvssScore})` : `${priority}  (${cvssScore})` };
-        }
-
-        function checkLinkedIssue(issue) {
-            const issueLinks = issue.fields.issuelinks;
-            console.log("Checking linked issue field:", issueLinks);
-            return { name: 'Engagement Issue', status: issueLinks && issueLinks.length > 0 ? 'OK' : 'CRIT', message: issueLinks.length > 0 ? 'Linked issues present' : 'No linked issues' };
-        }
-
-        function checkEngagementStatus(issue, parentIssue) {
-            const status = parentIssue ? parentIssue.fields.status.name : 'No parent issue';
-            console.log("Checking engagement status field for parent issue:", status);
-            return { name: 'Engagement Status', status: parentIssue && parentIssue.fields.status.name !== 'Pre-Engagement' ? 'OK' : 'CRIT', message: `${status}` };
-        }
-
-        function checkDescriptionField(issue) {
-            const description = issue.fields.description?.content;
-            console.log("Checking description field:", description);
-            return { name: 'Description', status: description?.length ? 'OK' : 'CRIT', message: description?.length ? 'Present' : 'Missing' };
-        }
-
-        function checkAffectedComponentsField(issue) {
-            const affectedComponents = issue.fields.customfield_11200?.content;
-            console.log("Checking affected components field:", affectedComponents);
-            return { name: 'Affected Components', status: affectedComponents?.length ? 'OK' : 'CRIT', message: affectedComponents?.length ? 'Present' : 'Missing' };
-        }
-
-        function checkSynopsisField(issue) {
-            const synopsis = issue.fields.customfield_10318?.content;
-            console.log("Checking synopsis field:", synopsis);
-            return { name: 'Synopsis', status: synopsis?.length ? 'OK' : 'CRIT', message: synopsis?.length ? 'Present' : 'Missing' };
-        }
-
-        function checkRecommendationField(issue) {
-            const recommendation = issue.fields.customfield_10317?.content;
-            console.log("Checking recommendation field:", recommendation);
-            return { name: 'Recommendation', status: recommendation?.length ? 'OK' : 'CRIT', message: recommendation?.length ? 'Present' : 'Missing' };
-        }
-
-        function checkTestingPhaseField(issue) {
-            const testingPhase = issue.fields.customfield_10311;
-            console.log("Checking testing phase field:", testingPhase);
-            return { name: 'Testing Phase', status: testingPhase ? 'OK' : 'CRIT', message: testingPhase ? 'Present' : 'Missing' };
-        }
-
-        function checkDefectStatusField(issue) {
-            const defectStatus = issue.fields.customfield_10314;
-            console.log("Checking defect status field:", defectStatus);
-            return { name: 'Defect Status', status: defectStatus ? 'OK' : 'CRIT', message: defectStatus ? 'Present' : 'Missing' };
-        }
-
-        function checkCVSSScoreField(issue) {
-            const cvssScore = issue.fields.customfield_10315;
-            console.log("Checking CVSS score field:", cvssScore);
-            return { name: 'CVSS Score', status: cvssScore ? 'OK' : 'CRIT', message: cvssScore ? 'Present' : 'Missing' };
-        }
-
-        function checkCVSSVectorStringField(issue) {
-            const cvssVectorString = issue.fields.customfield_10316;
-            let status = 'OK';
-            let message = 'Present';
-            console.log("Checking CVSS vector string field:", cvssVectorString);
-            // CRIT if the vector string is empty or doesn't exist
-            if (!cvssVectorString) {
-                status = 'CRIT';
-                message = 'Missing';
-            } else {
-                // WARN if the vector string doesn't start with CVSS:3.1
-                if (!cvssVectorString.startsWith('CVSS:3.1/')) {
-                    status = 'WARN';
-                    message = `Incorrect version, should be CVSS:3.1 not ${cvssVectorString.split('/')[0]}`;
-                }
-            }
-            return { name: 'CVSS Vector', status, message };
-        }
-
-        function checkVulnerabilityCategoryField(issue) {
-            const vulnerabilityCategory = issue.fields.customfield_10900;
-            console.log("Checking vulnerability category field:", vulnerabilityCategory);
-            return { name: 'Vulnerability Category', status: vulnerabilityCategory ? 'OK' : 'CRIT', message: vulnerabilityCategory ? 'Present' : 'Missing' };
-        }
-    </script>
+    function checkVulnerabilityCategoryField(issue) {
+      const vulnerabilityCategory = issue.fields.customfield_10900;
+      console.log("Checking vulnerability category field:", vulnerabilityCategory);
+      return {
+        name: "Vulnerability Category",
+        status: vulnerabilityCategory ? "OK" : "CRIT",
+        message: vulnerabilityCategory ? "Present" : "Missing",
+      };
+    }
+  </script>
 </body>
 
 </html>
