@@ -63,6 +63,13 @@
         7.0: "High",
         9.0: "Critical",
       },
+      10900: {
+        0.0: "Sev4",
+        0.1: "Sev3",
+        4.0: "Sev2",
+        7.0: "Sev1",
+        9.9: "Sev0"
+      }
     };
 
     let issueKey = null;
@@ -365,11 +372,11 @@
     }
 
     function checkSeverity(issue) {
-      const customerName = issue.fields.project.key || "_default";
+      const customerId = issue.fields.project.id || "_default";
       const priority = issue.fields.priority?.name || issue.fields.customfield_10313?.value;
       // const severity = issue.fields.customfield_10313;
       const cvssScore = parseFloat(issue.fields.customfield_10315 || 0);
-      const hashedName = customerName;
+      const hashedName = customerId;
       const customerLookup = cvssScoreLookup[hashedName] || cvssScoreLookup._default;
       const intendedSeverity = customerLookup[
         Object.keys(customerLookup)
